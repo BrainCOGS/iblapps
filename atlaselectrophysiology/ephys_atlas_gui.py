@@ -2120,10 +2120,22 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--offline', default=False, required=False, help='Offline mode')
     parser.add_argument('-r', '--remote', default=False, required=False, action='store_true', help='Remote mode')
     parser.add_argument('-i', '--insertion', default=None, required=False, help='Insertion mode')
+    parser.add_argument('-d', '--directory', default=None, required=False, help='Data directory')
     args = parser.parse_args()
 
     app = QtWidgets.QApplication([])
     mainapp = MainWindow(offline=args.offline, probe_id=args.insertion, remote=args.remote)
+
+    folder_path = Path(args.directory)
+    mainapp.folder_line.setText(str(folder_path))
+    mainapp.prev_alignments, shank_options = mainapp.loaddata.get_info(folder_path)
+    mainapp.populate_lists(shank_options, mainapp.shank_list, mainapp.shank_combobox)
+    mainapp.populate_lists(mainapp.prev_alignments, mainapp.align_list, mainapp.align_combobox)
+    mainapp.on_shank_selected(0)
+
+    mainapp.data_button_pressed()
+
     # mainapp = MainWindow(offline=True)
     mainapp.show()
+    
     app.exec_()
