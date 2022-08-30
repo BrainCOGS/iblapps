@@ -2111,6 +2111,22 @@ def viewer(probe_id, one=None, histology=False, spike_collection=None, title=Non
     av.show()
     return av
 
+def launch_gui(data_directory):
+
+    folder_path = Path(data_directory)
+    mainapp.folder_line.setText(str(folder_path))
+    mainapp.prev_alignments, shank_options = mainapp.loaddata.get_info(folder_path)
+    mainapp.populate_lists(shank_options, mainapp.shank_list, mainapp.shank_combobox)
+    mainapp.populate_lists(mainapp.prev_alignments, mainapp.align_list, mainapp.align_combobox)
+    mainapp.on_shank_selected(0)
+
+    mainapp.data_button_pressed()
+
+    # mainapp = MainWindow(offline=True)
+    mainapp.show()
+    
+    app.exec_()
+
 
 if __name__ == '__main__':
 
