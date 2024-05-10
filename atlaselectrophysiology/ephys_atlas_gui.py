@@ -2,7 +2,7 @@ import os
 import platform
 
 if platform.system() == 'Darwin':
-    if platform.release().split('.')[0] == '20':
+    if platform.release().split('.')[0] >= '20':
         os.environ["QT_MAC_WANTS_LAYER"] = "1"
 
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -16,6 +16,8 @@ from ibllib.pipes.ephys_alignment import EphysAlignment
 import atlaselectrophysiology.plot_data as pd
 import atlaselectrophysiology.ColorBar as cb
 import atlaselectrophysiology.ephys_gui_setup as ephys_gui
+from atlaselectrophysiology.subject_scaling import ScalingWindow
+from ephysfeatures.features_across_region import RegionFeatureWindow
 from atlaselectrophysiology.create_overview_plots import make_overview_plot
 from pathlib import Path
 import PyQt5 as qt
@@ -126,10 +128,11 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         self.cluster_popups = []
         self.label_popup = []
         self.popup_status = True
+        self.subj_win = None
 
         self.hist_data = {
-            'region': [0] * (self.max_idx + 1),
-            'axis_label': [0] * (self.max_idx + 1),
+            'region': [],
+            'axis_label': [],
             'colour': []
         }
 
@@ -140,8 +143,8 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         }
 
         self.scale_data = {
-            'region': [0] * (self.max_idx + 1),
-            'scale': [0] * (self.max_idx + 1)
+            'region': [],
+            'scale': []
         }
 
         self.hist_nearby_x = None
@@ -150,6 +153,7 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         self.hist_nearby_parent_x = None
         self.hist_nearby_parent_y = None
         self.hist_nearby_parent_col = None
+        self.hist_mapping = 'Allen'
 
         self.track = [0] * (self.max_idx + 1)
         self.features = [0] * (self.max_idx + 1)
@@ -589,12 +593,12 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         fig.clear()
         self.hist_regions = np.empty((0, 1))
         axis = fig.getAxis(ax)
-        axis.setTicks([self.hist_data['axis_label'][self.idx]])
+        axis.setTicks([self.hist_data['axis_label']])
         axis.setZValue(10)
         self.set_axis(self.fig_hist, 'bottom', pen='w', label='blank')
 
         # Plot each histology region
-        for ir, reg in enumerate(self.hist_data['region'][self.idx]):
+        for ir, reg in enumerate(self.hist_data['region']):
             colour = QtGui.QColor(*self.hist_data['colour'][ir])
             region = pg.LinearRegionItem(values=(reg[0], reg[1]),
                                          orientation=pg.LinearRegionItem.Horizontal,
@@ -609,8 +613,9 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         self.selected_region = self.hist_regions[-2]
 
         # Boundary for final region
-        bound = pg.InfiniteLine(pos=self.hist_data['region'][self.idx][-1][1], angle=0,
+        bound = pg.InfiniteLine(pos=self.hist_data['region'][-1][1], angle=0,
                                 pen='w')
+
         fig.addItem(bound)
         # Add dotted lines to plot to indicate region along probe track where electrode
         # channels are distributed
@@ -661,7 +666,7 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
 
         # Plot each histology region
         for ir, reg in enumerate(self.hist_data_ref['region']):
-            colour = QtGui.QColor(*self.hist_data['colour'][ir])
+            colour = QtGui.QColor(*self.hist_data_ref['colour'][ir])
             region = pg.LinearRegionItem(values=(reg[0], reg[1]),
                                          orientation=pg.LinearRegionItem.Horizontal,
                                          brush=colour, movable=False)
@@ -751,11 +756,7 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         self.track[self.idx] = (self.track[self.idx_prev] + self.tip_pos.value() / 1e6)
         self.features[self.idx] = (self.features[self.idx_prev])
 
-        self.hist_data['region'][self.idx], self.hist_data['axis_label'][self.idx] \
-            = self.ephysalign.scale_histology_regions(self.features[self.idx],
-                                                      self.track[self.idx])
-        self.scale_data['region'][self.idx], self.scale_data['scale'][self.idx] \
-            = self.ephysalign.get_scale_factor(self.hist_data['region'][self.idx])
+        self.get_scaled_histology()
 
     def scale_hist_data(self):
         """
@@ -787,14 +788,35 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         else:
             self.track[self.idx] = self.ephysalign.adjust_extremes_uniform(self.features[self.idx],
                                                                            self.track[self.idx])
-        self.hist_data['region'][self.idx], self.hist_data['axis_label'][self.idx] \
-            = self.ephysalign.scale_histology_regions(self.features[self.idx],
-                                                      self.track[self.idx])
-        self.scale_data['region'][self.idx], self.scale_data['scale'][self.idx] \
-            = self.ephysalign.get_scale_factor(self.hist_data['region'][self.idx])
 
-        # to automatically have lines go to correct position
-        # self.loaddata.track2feature(line_track, self.idx)
+        self.get_scaled_histology()
+
+    def get_scaled_histology(self):
+        if self.hist_mapping == 'Allen':
+            self.hist_data['region'], self.hist_data['axis_label'] \
+                = self.ephysalign.scale_histology_regions(self.features[self.idx], self.track[self.idx])
+            self.hist_data['colour'] = self.ephysalign.region_colour
+
+            self.scale_data['region'], self.scale_data['scale'] \
+                = self.ephysalign.get_scale_factor(self.hist_data['region'])
+
+            self.hist_data_ref['region'], self.hist_data_ref['axis_label'] \
+                = self.ephysalign.scale_histology_regions(self.ephysalign.track_extent,
+                                                          self.ephysalign.track_extent)
+            self.hist_data_ref['colour'] = self.ephysalign.region_colour
+
+        elif self.hist_mapping == 'FP':
+            self.hist_data['region'], self.hist_data['axis_label'] \
+                = self.ephysalign.scale_histology_regions(self.features[self.idx], self.track[self.idx], region=self.region_fp,
+                                                          region_label=self.region_label_fp)
+            self.hist_data['colour'] = self.region_colour_fp
+            self.scale_data['region'], self.scale_data['scale'] \
+                = self.ephysalign.get_scale_factor(self.hist_data['region'], region_orig=self.region_fp)
+
+            self.hist_data_ref['region'], self.hist_data_ref['axis_label'] \
+                = self.ephysalign.scale_histology_regions(self.ephysalign.track_extent, self.ephysalign.track_extent,
+                                                          region=self.region_fp, region_label=self.region_label_fp)
+            self.hist_data_ref['colour'] = self.region_colour_fp
 
     def plot_scale_factor(self):
         """
@@ -808,14 +830,14 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
 
         self.fig_scale.clear()
         self.scale_regions = np.empty((0, 1))
-        self.scale_factor = self.scale_data['scale'][self.idx]
-        scale_factor = self.scale_data['scale'][self.idx] - 0.5
+        self.scale_factor = self.scale_data['scale']
+        scale_factor = self.scale_data['scale'] - 0.5
         color_bar = cb.ColorBar('seismic')
         cbar = color_bar.makeColourBar(20, 5, self.fig_scale_cb, min=0.5, max=1.5,
                                        label='Scale Factor')
         colours = color_bar.map.mapToQColor(scale_factor)
 
-        for ir, reg in enumerate(self.scale_data['region'][self.idx]):
+        for ir, reg in enumerate(self.scale_data['region']):
             region = pg.LinearRegionItem(values=(reg[0], reg[1]),
                                          orientation=pg.LinearRegionItem.Horizontal,
                                          brush=colours[ir], movable=False)
@@ -825,7 +847,7 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
             self.fig_scale.addItem(bound)
             self.scale_regions = np.vstack([self.scale_regions, region])
 
-        bound = pg.InfiniteLine(pos=self.scale_data['region'][self.idx][-1][1], angle=0,
+        bound = pg.InfiniteLine(pos=self.scale_data['region'][-1][1], angle=0,
                                 pen=colours[-1])
 
         self.fig_scale.addItem(bound)
@@ -1035,7 +1057,7 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
             {'img': image data for each channel bank, list of np.array((1,ny)), list
              'scale': scaling to apply to each image, list of np.array([xscale,yscale]), list
              'offset': offset to apply to each image, list of np.array([xoffset,yoffset]), list
-             'level': colourbar extremes np.array([min val, max val]), float
+             'levels': colourbar extremes np.array([min val, max val]), float
              'cmap': colourmap to use, string
              'xrange': range to display of x axis, np.array([min range, max range]), float
              'title': description to place on colorbar, string
@@ -1089,7 +1111,8 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         param data: dictionary of data to plot
             {'img': image data, np.array((nx,ny)), float
              'scale': scaling to apply to each axis, np.array([xscale,yscale]), float
-             'level': colourbar extremes np.array([min val, max val]), float
+             'levels': colourbar extremes np.array([min val, max val]), float
+             'offset': offset to apply to each image, np.array([xoffset,yoffset]), float
              'cmap': colourmap to use, string
              'xrange': range to display of x axis, np.array([min range, max range]), float
              'xaxis': label for xaxis, string
@@ -1222,7 +1245,7 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
 
         # Only run once
         if not self.data_status:
-            self.probe_path, ephys_path, alf_path, self.chn_depths, self.sess_notes = \
+            self.probe_path, self.chn_depths, self.sess_notes, data = \
                 self.loaddata.get_data()
             if not self.probe_path:
                 return
@@ -1240,24 +1263,17 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
                 self.ephysalign = EphysAlignment(self.xyz_picks, self.chn_depths,
                                                  brain_atlas=self.loaddata.brain_atlas)
 
+            self.region_fp, self.region_label_fp, self.region_colour_fp, _ \
+                = EphysAlignment.get_histology_regions(self.ephysalign.xyz_samples, self.ephysalign.sampling_trk,
+                                                       self.loaddata.franklin_atlas)
+
             self.features[self.idx], self.track[self.idx], self.xyz_track \
                 = self.ephysalign.get_track_and_feature()
 
-            self.hist_data['region'][self.idx], self.hist_data['axis_label'][self.idx] \
-                = self.ephysalign.scale_histology_regions(self.features[self.idx],
-                                                          self.track[self.idx])
-            self.hist_data['colour'] = self.ephysalign.region_colour
-            self.scale_data['region'][self.idx], self.scale_data['scale'][self.idx] \
-                = self.ephysalign.get_scale_factor(self.hist_data['region'][self.idx])
-
-            self.hist_data_ref['region'], self.hist_data_ref['axis_label'] \
-                = self.ephysalign.scale_histology_regions(self.ephysalign.track_extent,
-                                                          self.ephysalign.track_extent)
-            self.hist_data_ref['colour'] = self.ephysalign.region_colour
-
+            self.get_scaled_histology()
         # If we have not loaded in the data before then we load eveything we need
         if not self.data_status:
-            self.plotdata = pd.PlotData(self.probe_path, ephys_path, alf_path,
+            self.plotdata = pd.PlotData(self.probe_path, data,
                                         self.current_shank_idx)
             self.set_lims(np.min([0, self.plotdata.chn_min]), self.plotdata.chn_max)
             self.scat_drift_data = self.plotdata.get_depth_data_scatter()
@@ -1272,17 +1288,16 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
             self.line_fr_data, self.line_amp_data = self.plotdata.get_fr_amp_data_line()
             self.probe_rfmap, self.rfmap_boundaries = self.plotdata.get_rfmap_data()
             self.img_stim_data = self.plotdata.get_passive_events()
-
             if not self.offline:
                 self.img_raw_data = self.plotdata.get_raw_data_image(self.loaddata.probe_id, one=self.loaddata.one)
             else:
                 self.img_raw_data = {}
-
             if self.histology_exists:
-                self.slice_data = self.loaddata.get_slice_images(self.ephysalign.xyz_samples)
+                self.slice_data, self.fp_slice_data = self.loaddata.get_slice_images(self.ephysalign.xyz_samples)
             else:
                 # probably need to return an empty array of things
                 self.slice_data = {}
+                self.fp_slice_data = None
 
             self.data_status = True
             self.init_menubar()
@@ -1347,6 +1362,19 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
             self.plot_histology_nearby(self.fig_hist_ref)
         else:
             self.plot_histology_ref(self.fig_hist_ref)
+
+    def toggle_histology_map_button_pressed(self):
+
+        if self.hist_mapping == 'Allen':
+            self.hist_mapping = 'FP'
+        else:
+            self.hist_mapping = 'Allen'
+
+        self.get_scaled_histology()
+        self.plot_histology(self.fig_hist)
+        self.plot_histology_ref(self.fig_hist_ref)
+        self.remove_lines_points()
+        self.add_lines_points()
 
     def filter_unit_pressed(self, type):
         self.plotdata.filter_units(type)
@@ -1610,6 +1638,7 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
             self.idx = np.mod(self.current_idx, self.max_idx)
             self.remove_lines_points()
             self.add_lines_points()
+            self.get_scaled_histology()
             self.plot_histology(self.fig_hist)
             self.plot_scale_factor()
             self.remove_lines_points()
@@ -1636,6 +1665,7 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
             self.idx = np.mod(self.current_idx, self.max_idx)
             self.remove_lines_points()
             self.add_lines_points()
+            self.get_scaled_histology()
             self.plot_histology(self.fig_hist)
             self.plot_scale_factor()
             self.remove_lines_points()
@@ -1673,12 +1703,9 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         self.idx = np.mod(self.current_idx, self.max_idx)
         self.track[self.idx] = np.copy(self.ephysalign.track_init)
         self.features[self.idx] = np.copy(self.ephysalign.feature_init)
-        self.hist_data['region'][self.idx], self.hist_data['axis_label'][self.idx] \
-            = self.ephysalign.scale_histology_regions(self.features[self.idx],
-                                                      self.track[self.idx])
-        self.hist_data['colour'] = self.ephysalign.region_colour
-        self.scale_data['region'][self.idx], self.scale_data['scale'][self.idx] \
-            = self.ephysalign.get_scale_factor(self.hist_data['region'][self.idx])
+
+        self.get_scaled_histology()
+
         self.plot_histology(self.fig_hist)
         self.plot_scale_factor()
         if np.any(self.feature_prev):
@@ -1744,7 +1771,7 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         if upload == QtWidgets.QMessageBox.Yes:
             self.loaddata.upload_data(self.features[self.idx], self.track[self.idx],
                                       self.xyz_channels)
-            self.prev_alignments = self.loaddata.get_previous_alignments()
+            self.prev_alignments = self.loaddata.get_previous_alignments(self.current_shank_idx)
             self.populate_lists(self.prev_alignments, self.align_list, self.align_combobox)
             self.loaddata.get_starting_alignment(0)
             QtWidgets.QMessageBox.information(self, 'Status', "Channels locations saved")
@@ -1874,9 +1901,8 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         autocorr_plot.setYRange(min=0, max=1.05 * np.max(autocorr))
         self.set_axis(autocorr_plot, 'bottom', label='T (ms)')
         self.set_axis(autocorr_plot, 'left', label='Number of spikes')
-        plot = pg.BarGraphItem()
-        plot.setOpts(x=self.plotdata.t_autocorr, height=autocorr, width=0.24,
-                     brush=self.bar_colour)
+        plot = pg.BarGraphItem(x=self.plotdata.t_autocorr, height=autocorr, width=0.24,
+                               brush=self.bar_colour)
         autocorr_plot.addItem(plot)
 
         template_wf = self.plotdata.get_template_wf(clust_idx)
@@ -1902,6 +1928,17 @@ class MainWindow(QtWidgets.QMainWindow, ephys_gui.Setup):
         self.activateWindow()
 
         return clust_no
+
+    def display_subject_scaling(self):
+        if self.subj_win is not None:
+            self.subj_win.close()
+
+        self.subj_win = ScalingWindow(self.loaddata.probe_id, self.loaddata.subj, self.loaddata.one, self.loaddata.brain_atlas)
+
+    def display_region_features(self):
+        self.region_win = RegionFeatureWindow(self.loaddata.one, np.unique(np.array(self.ephysalign.region_id).ravel()),
+                                              self.loaddata.brain_atlas, download=False)
+        self.region_win.show()
 
     def on_mouse_double_clicked(self, event):
         """

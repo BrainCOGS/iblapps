@@ -2,10 +2,13 @@ import logging
 import numpy as np
 from datetime import datetime
 import ibllib.pipes.histology as histology
-from neuropixel import SITES_COORDINATES
-import ibllib.atlas as atlas
+from neuropixel import trace_header
+import iblatlas.atlas as atlas
 from ibllib.qc.alignment_qc import AlignmentQC
+from iblutil.numerical import ismember
+from iblutil.util import Bunch
 from one.api import ONE
+from one.remote import aws
 from pathlib import Path
 import one.alf as alf
 from one import params
@@ -22,11 +25,16 @@ class LoadData:
                  load_histology=True, spike_collection=None, mode='auto'):
         self.one = one or ONE(base_url=ONE_BASE_URL, mode=mode)
         self.brain_atlas = brain_atlas or atlas.AllenAtlas(25)
+        # self.franklin_atlas = atlas.FranklinPaxinosAtlas()
+        self.franklin_atlas = None
         self.download_hist = load_histology  # whether or not to look for the histology files
         self.spike_collection = spike_collection
 
         if testing:
             self.probe_id = probe_id
+            refch_3a = np.array([36, 75, 112, 151, 188, 227, 264, 303, 340, 379])
+            th = trace_header(version=1)
+            SITES_COORDINATES = np.delete(np.c_[th['x'], th['y']], refch_3a, axis=0)
             self.chn_coords = SITES_COORDINATES
             self.chn_depths = SITES_COORDINATES[:, 1]
             self.probe_collection = None
@@ -34,6 +42,10 @@ class LoadData:
             self.brain_regions = self.one.alyx.rest('brain-regions', 'list')
             self.chn_coords = None
             self.chn_depths = None
+            # Download bwm aggregate tables for for ephys feature gui
+            table_path = self.one.cache_dir.joinpath('bwm_features')
+            s3, bucket_name = aws.get_s3_from_alyx(alyx=self.one.alyx)
+            aws.s3_download_folder("aggregates/bwm/latest", table_path, s3=s3, bucket_name=bucket_name)
 
         # Initialise all variables that get assigned
         self.sess_with_hist = None
@@ -244,51 +256,42 @@ class LoadData:
                 self.probe_collection = f'alf/{self.probe_label}'
                 probe_path = Path(self.sess_path, 'alf', self.probe_label)
 
+        data = {}
         try:
-            _ = self.one.load_object(self.eid, 'spikes', collection=self.probe_collection,
-                                     attribute=['depths', 'amps', 'times', 'clusters'],
-                                     download_only=True)
+            data['spikes'] = self.one.load_object(self.eid, 'spikes', collection=self.probe_collection,
+                                                  attribute=['depths', 'amps', 'times', 'clusters'])
 
-            _ = self.one.load_object(self.eid, 'clusters', collection=self.probe_collection,
-                                     attribute=['metrics', 'peakToTrough', 'waveforms',
-                                                'channels'],
-                                     download_only=True)
+            data['clusters'] = self.one.load_object(self.eid, 'clusters', collection=self.probe_collection,
+                                                    attribute=['metrics', 'peakToTrough', 'waveforms', 'channels'])
 
-            _ = self.one.load_object(self.eid, 'channels', collection=self.probe_collection,
-                                     attribute=['rawInd', 'localCoordinates'], download_only=True)
+            # Remove low firing rate clusters
+            min_firing_rate = 50. / 3600.
+            clu_idx = data['clusters'].metrics.firing_rate > min_firing_rate
+            data['clusters'] = Bunch({k: v[clu_idx] for k, v in data['clusters'].items()})
+            spike_idx, ib = ismember(data['spikes'].clusters, data['clusters'].metrics.index)
+            data['clusters'].metrics.reset_index(drop=True, inplace=True)
+            data['spikes'] = Bunch({k: v[spike_idx] for k, v in data['spikes'].items()})
+            data['spikes'].clusters = data['clusters'].metrics.index[ib].astype(np.int32)
+
+            data['spikes']['exists'] = True
+            data['clusters']['exists'] = True
+
+            data['channels'] = self.one.load_object(self.eid, 'channels', collection=self.probe_collection,
+                                                    attribute=['rawInd', 'localCoordinates'])
+            data['channels']['exists'] = True
+
+            # Set low firing rate clusters to bad
+
+
         except alf.exceptions.ALFObjectNotFound:
             logger.error(f'Could not load spike sorting for probe insertion {self.probe_id}, GUI'
                          f' will not work')
-            return [None] * 5
+            return [None] * 4
 
-        dtypes_raw = [
-            '_iblqc_ephysTimeRmsAP.rms.npy',
-            '_iblqc_ephysTimeRmsAP.timestamps.npy',
-            '_iblqc_ephysSpectralDensityAP.freqs.npy',
-            '_iblqc_ephysSpectralDensityAP.power.npy',
-            '_iblqc_ephysTimeRmsLF.rms.npy',
-            '_iblqc_ephysTimeRmsLF.timestamps.npy',
-            '_iblqc_ephysSpectralDensityLF.freqs.npy',
-            '_iblqc_ephysSpectralDensityLF.power.npy',
-        ]
-
-        collection_raw = [f'raw_ephys_data/{self.probe_label}'] * len(dtypes_raw)
-
-        dtypes_alf = [
-            '_ibl_passiveGabor.table.csv',
-            '_ibl_passivePeriods.intervalsTable.csv',
-            '_ibl_passiveRFM.times.npy',
-            '_ibl_passiveStims.table.csv']
-
-        collection_alf = ['alf'] * len(dtypes_alf)
-
-        dtypes_passive = [
-            '_iblrig_RFMapStim.raw.bin']
-
-        collection_passive = ['raw_passive_data'] * len(dtypes_passive)
-
-        dtypes = dtypes_raw + dtypes_alf + dtypes_passive
-        collections = collection_raw + collection_alf + collection_passive
+        data['rms_AP'] = self.get_rms_data(band='AP')
+        data['rms_LF'] = self.get_rms_data(band='LF')
+        data['psd_lf'] = self.get_psd_data(band='LF')
+        data['rf_map'], data['pass_stim'], data['gabor'] = self.get_passive_data()
 
         print(self.subj)
         print(self.probe_label)
@@ -296,15 +299,9 @@ class LoadData:
         print(self.eid)
         print(self.probe_collection)
 
-        _ = self.one.load_datasets(self.eid, datasets=dtypes, collections=collections,
-                                   download_only=True, assert_present=False)
-
-        ephys_path = Path(self.sess_path, 'raw_ephys_data', self.probe_label)
-        alf_path = Path(self.sess_path, 'alf')
-
-        self.chn_coords = np.load(Path(probe_path, 'channels.localCoordinates.npy'))
+        self.chn_coords = data['channels']['localCoordinates']
         self.chn_depths = self.chn_coords[:, 1]
-        self.cluster_chns = np.load(Path(probe_path, 'clusters.channels.npy'))
+        self.cluster_chns = data['clusters']['channels']
 
         sess = self.one.alyx.rest('sessions', 'read', id=self.eid)
         sess_notes = None
@@ -315,7 +312,89 @@ class LoadData:
         if not sess_notes:
             sess_notes = 'No notes for this session'
 
-        return probe_path, ephys_path, alf_path, self.chn_depths, sess_notes
+        return probe_path, self.chn_depths, sess_notes, data
+
+    def get_passive_data(self):
+
+        # Load in RFMAP data
+        try:
+            rf_data = self.one.load_object(self.eid, 'passiveRFM', collection='alf')
+            frame_path = self.one.load_dataset(self.eid, '_iblrig_RFMapStim.raw.bin', collection='raw_passive_data',
+                                               download_only=True)
+            frames = np.fromfile(frame_path, dtype="uint8")
+            rf_data['frames'] = np.transpose(np.reshape(frames, [15, 15, -1], order="F"), [2, 1, 0])
+            rf_data['exists'] = True
+        except Exception:
+            logger.warning('rfmap data was not found, some plots will not display')
+            rf_data = {}
+            rf_data['exists'] = False
+
+        # Load in passive stim data
+        try:
+            stim_data = self.one.load_object(self.eid, 'passiveStims', collection='alf')
+            stim_data['exists'] = True
+        except alf.exceptions.ALFObjectNotFound:
+            logger.warning('passive stim data was not found, some plots will not display')
+            stim_data = {}
+            stim_data['exists'] = False
+
+        try:
+            gabor = alf.io.load_object(self.eid, 'passiveGabor', collection='alf')
+            vis_stim = {}
+            vis_stim['leftGabor'] = gabor['start'][(gabor['position'] == 35) & (gabor['contrast'] > 0.1)]
+            vis_stim['rightGabor'] = gabor['start'][(gabor['position'] == -35) & (gabor['contrast'] > 0.1)]
+            vis_stim['exists'] = True
+        except Exception:
+            logger.warning('passive gabor data was not found, some plots will not display')
+            vis_stim = {}
+            vis_stim['exists'] = False
+
+        return rf_data, stim_data, vis_stim
+
+    def get_rms_data(self, band='AP'):
+
+        try:
+            data = self.one.load_object(self.eid, f'ephysTimeRms{band}', collection=f'raw_ephys_data/{self.probe_label}')
+            if len(data) != 2:
+                data = {}
+                data['exists'] = False
+            else:
+                if 'amps' in data.keys():
+                    data['rms'] = data.pop['amps']
+
+                if 'timestamps' not in data.keys():
+                    data['timestamps'] = np.array([0, data['rms'].shape[0]])
+                    data['xaxis'] = 'Time samples'
+                else:
+                    data['xaxis'] = 'Time (s)'
+
+                data['exists'] = True
+
+        except alf.exceptions.ALFObjectNotFound:
+            logger.warning(f'rms {band} data was not found, some plots will not display')
+            data = {}
+            data['exists'] = False
+
+        return data
+
+    def get_psd_data(self, band='LF'):
+
+        try:
+            data = self.one.load_object(self.eid, f'ephysSpectralDensity{band}', collection=f'raw_ephys_data/{self.probe_label}')
+            if len(data) != 2:
+                data = {}
+                data['exists'] = False
+            else:
+                if 'amps' in data.keys():
+                    data['power'] = data.pop['amps']
+
+                data['exists'] = True
+        except alf.exceptions.ALFObjectNotFound:
+            logger.warning('lfp data was not found, some plots will not display')
+            data = {}
+            data['exists'] = False
+
+        return data
 
     def get_allen_csv(self):
         """
@@ -394,6 +473,7 @@ class LoadData:
             hist_atlas_rd = atlas.AllenAtlas(hist_path=hist_path_rd)
             hist_slice_rd = hist_atlas_rd.image[index[:, 0], :, index[:, 2]]
             hist_slice_rd = np.swapaxes(hist_slice_rd, 0, 1)
+            del hist_atlas_rd
         else:
             print('Could not find red histology image for this subject')
             hist_slice_rd = np.copy(ccf_slice)
@@ -402,6 +482,7 @@ class LoadData:
             hist_atlas_gr = atlas.AllenAtlas(hist_path=hist_path_gr)
             hist_slice_gr = hist_atlas_gr.image[index[:, 0], :, index[:, 2]]
             hist_slice_gr = np.swapaxes(hist_slice_gr, 0, 1)
+            del hist_atlas_gr
         else:
             print('Could not find green histology image for this subject')
             hist_slice_gr = np.copy(ccf_slice)
@@ -410,6 +491,7 @@ class LoadData:
             hist_atlas_cb = atlas.AllenAtlas(hist_path=hist_path_cb)
             hist_slice_cb = hist_atlas_cb.image[index[:, 0], :, index[:, 2]]
             hist_slice_cb = np.swapaxes(hist_slice_cb, 0, 1)
+            del hist_atlas_cb
         else:
             print('Could not find example cerebellar histology image')
             hist_slice_cb = np.copy(ccf_slice)
@@ -425,7 +507,23 @@ class LoadData:
             'offset': np.array([width[0], height[0]])
         }
 
-        return slice_data
+        if self.franklin_atlas is not None:
+            index = self.franklin_atlas.bc.xyz2i(xyz_channels)[:, self.franklin_atlas.xyz2dims]
+            label_slice = self.franklin_atlas._label2rgb(self.franklin_atlas.label[index[:, 0], :, index[:, 2]])
+            label_slice = np.swapaxes(label_slice, 0, 1)
+            width = [self.franklin_atlas.bc.i2x(0), self.franklin_atlas.bc.i2x(456)]
+            height = [self.franklin_atlas.bc.i2z(index[0, 2]), self.franklin_atlas.bc.i2z(index[-1, 2])]
+
+            franklin_slice_data = {
+                'label': label_slice,
+                'scale': np.array([(width[-1] - width[0]) / ccf_slice.shape[0],
+                                   (height[-1] - height[0]) / ccf_slice.shape[1]]),
+                'offset': np.array([width[0], height[0]])
+            }
+        else:
+            franklin_slice_data = None
+
+        return slice_data, franklin_slice_data
 
     def get_region_description(self, region_idx):
         struct_idx = np.where(self.allen_id == region_idx)[0][0]
@@ -479,7 +577,7 @@ class LoadData:
         # Get the new trajectory
         ephys_traj = self.one.alyx.rest('trajectories', 'list', probe_insertion=self.probe_id,
                                         provenance='Ephys aligned histology track', no_cache=True)
-        patch_dict = {'json': json_data}
+        patch_dict = {'probe_insertion': self.probe_id, 'json': json_data}
         self.one.alyx.rest('trajectories', 'partial_update', id=ephys_traj[0]['id'],
                            data=patch_dict)
 
@@ -496,9 +594,9 @@ class LoadData:
         self.alyx_str = ephys_qc.upper() + ': ' + ephys_desc_str
 
         if ephys_qc.upper() == 'CRITICAL':
-            usrpmt.main_gui(eid=self.probe_id, reasons_selected=ephys_desc, one=self.one)
+            usrpmt.main_gui(self.probe_id, reasons_selected=ephys_desc, alyx=self.one.alyx)
 
-    def update_qc(self, upload_alyx=True, upload_flatiron=True):
+    def update_qc(self, upload_alyx=True, upload_flatiron=False):
         # if resolved just update the alignment_number
         align_qc = AlignmentQC(self.probe_id, one=self.one, brain_atlas=self.brain_atlas,
                                collection=self.probe_collection)

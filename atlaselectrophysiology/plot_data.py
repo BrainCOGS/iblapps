@@ -1,12 +1,11 @@
 from matplotlib import cm
-from pathlib import Path
 import numpy as np
-import one.alf as alf
-from brainbox.processing import bincount2D
-from brainbox.io.spikeglx import stream
+from iblutil.numerical import bincount2D
+from brainbox.io.spikeglx import Streamer
 from brainbox.population.decode import xcorr
 from brainbox.task import passive
 from neurodsp import voltage
+import neuropixel
 import scipy
 from PyQt5 import QtGui
 
@@ -19,15 +18,13 @@ np.seterr(divide='ignore', invalid='ignore')
 
 
 class PlotData:
-    def __init__(self, probe_path, ephys_path, alf_path, shank_idx):
+    def __init__(self, probe_path, data, shank_idx):
 
         self.probe_path = probe_path
-        self.ephys_path = ephys_path
-        self.alf_path = alf_path
+        self.data = data
 
-        channels = alf.io.load_object(self.probe_path, 'channels')
-        self.chn_coords_all = channels['localCoordinates']
-        self.chn_ind_all = channels['rawInd'].astype(int)
+        self.chn_coords_all = data['channels']['localCoordinates']
+        self.chn_ind_all = data['channels']['rawInd'].astype(int)
 
         self.chn_min = np.min(self.chn_coords_all[:, 1])
         self.chn_max = np.max(self.chn_coords_all[:, 1])
@@ -52,165 +49,91 @@ class PlotData:
             self.chn_coords = self.chn_coords_all
             self.chn_ind = self.chn_ind_all
 
+        chn_sort = np.argsort(self.chn_coords[:, 1])
+        self.chn_coords = self.chn_coords[chn_sort]
+        self.chn_ind = self.chn_ind[chn_sort]
+
         self.N_BNK = len(np.unique(self.chn_coords[:, 0]))
         self.idx_full = np.where(np.isin(self.chn_full, self.chn_coords[:, 1]))[0]
 
-        # See if spike data is available
-        try:
-            self.spikes = alf.io.load_object(self.probe_path, 'spikes')
-            self.max_spike_time = np.max(self.spikes['times'])
-            self.spike_data_status = True
-        except Exception:
-            print('spike data was not found, some plots will not display')
-            self.spike_data_status = False
+        if self.data['spikes']['exists']:
+            self.max_spike_time = np.max(self.data['spikes']['times'])
 
-        try:
-            self.clusters = alf.io.load_object(self.probe_path, 'clusters')
-            shank_spikes = np.isin(self.chn_ind_all[self.clusters.channels[self.spikes.clusters]],
+        if self.data['clusters']['exists']:
+            shank_spikes = np.isin(self.chn_ind_all[self.data['clusters'].channels[self.data['spikes'].clusters]],
                                    self.chn_ind)
-            for key in self.spikes.keys():
-                self.spikes[key] = self.spikes[key][shank_spikes]
-
+            for key in self.data['spikes'].keys():
+                if key == 'exists':
+                    continue
+                self.data['spikes'][key] = self.data['spikes'][key][shank_spikes]
             self.filter_units('all')
-            self.cluster_data_status = True
             self.compute_timescales()
 
-        except Exception as err:
-            print(err)
-            print('cluster data was not found, some plots will not display')
-            self.cluster_data_status = False
-
-        try:
-            lfp_spectrum = alf.io.load_object(self.ephys_path, 'ephysSpectralDensityLF',
-                                              namespace='iblqc')
-            if len(lfp_spectrum) == 2:
-                self.lfp_freq = lfp_spectrum.get('freqs')
-                self.lfp_power = lfp_spectrum.get('power', [])
-                if not np.any(self.lfp_power):
-                    self.lfp_power = lfp_spectrum.get('amps')
-                self.lfp_data_status = True
-            else:
-                print('lfp data was not found, some plots will not display')
-                self.lfp_data_status = False
-        except Exception:
-            print('lfp data was not found, some plots will not display')
-            self.lfp_data_status = False
-
-        try:
-            print(self.alf_path)
-            rf_map_times = alf.io.load_object(self.alf_path, object='passiveRFM',
-                                              namespace='ibl')
-            # This needs to go into brainbox!!
-            rf_map_frames_path = (self.alf_path.parent.
-                                  joinpath('raw_passive_data', '_iblrig_RFMapStim.raw.bin'))
-            rf_map_frames = np.fromfile(rf_map_frames_path, dtype="uint8")
-            y_pix, x_pix = 15, 15
-            frames = np.transpose(np.reshape(rf_map_frames, [y_pix, x_pix, -1], order="F"),
-                                  [2, 1, 0])
-
-            self.rf_map = dict()
-            self.rf_map['times'] = rf_map_times['times']
-            self.rf_map['frames'] = frames
-            if len(self.rf_map) == 2:
-                self.rfmap_data_status = True
-            else:
-                print('rfmap data was not found, some plots will not display')
-                self.rfmap_data_status = False
-        except Exception as err:
-            print(err)
-            print('rfmp data was not found, some plots will not display')
-            self.rfmap_data_status = False
-
-        try:
-            self.aud_stim = alf.io.load_object(self.alf_path, object='passiveStims',
-                                               namespace='ibl')
-            if len(self.aud_stim) > 0:
-                self.passive_data_status = True
-        except Exception as err:
-            print(err)
-            print('passive stim data was not found, some plots will not display')
-            self.passive_data_status = False
-
-        try:
-            gabor = alf.io.load_object(self.alf_path, object='passiveGabor',
-                                       namespace='ibl')
-            self.vis_stim = dict()
-            self.vis_stim['leftGabor'] = gabor['start'][(gabor['position'] == 35) &
-                                                        (gabor['contrast'] > 0.1)]
-            self.vis_stim['rightGabor'] = gabor['start'][(gabor['position'] == -35) &
-                                                         (gabor['contrast'] > 0.1)]
-            self.gabor_data_status = True
-        except Exception as err:
-            print(err)
-            print('passive gabor data was not found, some plots will not display')
-            self.gabor_data_status = False
-
     def filter_units(self, type):
-        if type == 'all':
-            self.spike_idx = np.arange(self.spikes['clusters'].size)
 
-        elif type == 'KS good':
-            clust = np.where(self.clusters.metrics.ks2_label == 'good')
-            self.spike_idx = np.where(np.isin(self.spikes['clusters'], clust))[0]
+        try:
+            if type == 'all':
+                self.spike_idx = np.arange(self.data['spikes']['clusters'].size)
 
-        elif type == 'KS mua':
-            clust = np.where(self.clusters.metrics.ks2_label == 'mua')
-            self.spike_idx = np.where(np.isin(self.spikes['clusters'], clust))[0]
+            elif type == 'KS good':
+                clust = np.where(self.data['clusters'].metrics.ks2_label == 'good')
+                self.spike_idx = np.where(np.isin(self.data['spikes']['clusters'], clust))[0]
 
-        elif type == 'IBL good':
-            try:
-                clust = np.where(self.clusters.metrics.label == 1)
-                self.spike_idx = np.where(np.isin(self.spikes['clusters'], clust))[0]
-            except Exception:
-                print('IBL metrics not implemented will return ks good units instead')
-                clust = np.where(self.clusters.metrics.ks2_label == 'good')
-                self.spike_idx = np.where(np.isin(self.spikes['clusters'], clust))[0]
+            elif type == 'KS mua':
+                clust = np.where(self.data['clusters'].metrics.ks2_label == 'mua')
+                self.spike_idx = np.where(np.isin(self.data['spikes']['clusters'], clust))[0]
+
+            elif type == 'IBL good':
+                clust = np.where(self.data['clusters'].metrics.label == 1)
+                self.spike_idx = np.where(np.isin(self.data['spikes']['clusters'], clust))[0]
+        except Exception:
+            print(f'{type} metrics not found will return all units instead')
+            self.spike_idx = np.arange(self.data['spikes']['clusters'].size)
 
         # Filter for nans in depths and also in amps
-        self.kp_idx = np.where(~np.isnan(self.spikes['depths'][self.spike_idx]) &
-                               ~np.isnan(self.spikes['amps'][self.spike_idx]))[0]
+        self.kp_idx = np.where(~np.isnan(self.data['spikes']['depths'][self.spike_idx]) &
+                               ~np.isnan(self.data['spikes']['amps'][self.spike_idx]))[0]
 
 # Plots that require spike and cluster data
     def get_depth_data_scatter(self):
-        if not self.spike_data_status:
+        if not self.data['spikes']['exists']:
             data_scatter = None
             return data_scatter
         else:
             A_BIN = 10
-            amp_range = np.quantile(self.spikes['amps'][self.spike_idx][self.kp_idx], [0, 0.9])
+            amp_range = np.quantile(self.data['spikes']['amps'][self.spike_idx][self.kp_idx], [0, 0.9])
             amp_bins = np.linspace(amp_range[0], amp_range[1], A_BIN)
             colour_bin = np.linspace(0.0, 1.0, A_BIN + 1)
-            colours = (cm.get_cmap('BuPu')(colour_bin)[np.newaxis, :, :3][0]) * 255
-            spikes_colours = np.empty(self.spikes['amps'][self.spike_idx][self.kp_idx].size,
+            colours = ((cm.get_cmap('BuPu')(colour_bin)[np.newaxis, :, :3][0]) * 255).astype(np.int32)
+            spikes_colours = np.empty(self.data['spikes']['amps'][self.spike_idx][self.kp_idx].size,
                                       dtype=object)
-            spikes_size = np.empty(self.spikes['amps'][self.spike_idx][self.kp_idx].size)
+            spikes_size = np.empty(self.data['spikes']['amps'][self.spike_idx][self.kp_idx].size)
             for iA in range(amp_bins.size):
                 if iA == (amp_bins.size - 1):
-                    idx = np.where((self.spikes['amps'][self.spike_idx][self.kp_idx] >
+                    idx = np.where((self.data['spikes']['amps'][self.spike_idx][self.kp_idx] >
                                     amp_bins[iA]))[0]
                     # Make saturated spikes a very dark purple
                     spikes_colours[idx] = QtGui.QColor('#400080')
                 else:
-                    idx = np.where((self.spikes['amps'][self.spike_idx][self.kp_idx] >
+                    idx = np.where((self.data['spikes']['amps'][self.spike_idx][self.kp_idx] >
                                     amp_bins[iA]) &
-                                   (self.spikes['amps'][self.spike_idx][self.kp_idx] <=
+                                   (self.data['spikes']['amps'][self.spike_idx][self.kp_idx] <=
                                     amp_bins[iA + 1]))[0]
-
                     spikes_colours[idx] = QtGui.QColor(*colours[iA])
 
                 spikes_size[idx] = iA / (A_BIN / 4)
 
             data_scatter = {
-                'x': self.spikes['times'][self.spike_idx][self.kp_idx][0:-1:100],
-                'y': self.spikes['depths'][self.spike_idx][self.kp_idx][0:-1:100],
+                'x': self.data['spikes']['times'][self.spike_idx][self.kp_idx][0:-1:100],
+                'y': self.data['spikes']['depths'][self.spike_idx][self.kp_idx][0:-1:100],
                 'levels': amp_range * 1e6,
                 'colours': spikes_colours[0:-1:100],
                 'pen': None,
                 'size': spikes_size[0:-1:100],
                 'symbol': np.array('o'),
-                'xrange': np.array([np.min(self.spikes['times'][self.spike_idx][self.kp_idx]
+                'xrange': np.array([np.min(self.data['spikes']['times'][self.spike_idx][self.kp_idx]
                                            [0:-1:100]),
-                                    np.max(self.spikes['times'][self.spike_idx][self.kp_idx]
+                                    np.max(self.data['spikes']['times'][self.spike_idx][self.kp_idx]
                                            [0:-1:100])]),
                 'xaxis': 'Time (s)',
                 'title': 'Amplitude (uV)',
@@ -221,7 +144,7 @@ class PlotData:
             return data_scatter
 
     def get_fr_p2t_data_scatter(self):
-        if not self.spike_data_status:
+        if not self.data['spikes']['exists']:
             data_fr_scatter = None
             data_p2t_scatter = None
             data_amp_scatter = None
@@ -230,13 +153,13 @@ class PlotData:
             (clu,
              spike_depths,
              spike_amps,
-             n_spikes) = self.compute_spike_average((self.spikes['clusters'][self.spike_idx]
-                                                    [self.kp_idx]), (self.spikes['depths']
+             n_spikes) = self.compute_spike_average((self.data['spikes']['clusters'][self.spike_idx]
+                                                    [self.kp_idx]), (self.data['spikes']['depths']
                                                     [self.spike_idx][self.kp_idx]),
-                                                    (self.spikes['amps'][self.spike_idx]
+                                                    (self.data['spikes']['amps'][self.spike_idx]
                                                     [self.kp_idx]))
             spike_amps = spike_amps * 1e6
-            fr = n_spikes / np.max(self.spikes['times'])
+            fr = n_spikes / np.max(self.data['spikes']['times'])
             fr_levels = np.quantile(fr, [0, 1])
 
             data_fr_scatter = {
@@ -255,7 +178,7 @@ class PlotData:
                 'cluster': True
             }
 
-            p2t = self.clusters['peakToTrough'][clu]
+            p2t = self.data['clusters']['peakToTrough'][clu]
 
             # Define the p2t levels so always same colourbar across sessions
             p2t_levels = [-1.5, 1.5]
@@ -298,16 +221,16 @@ class PlotData:
             return data_fr_scatter, data_p2t_scatter, data_amp_scatter
 
     def get_fr_img(self):
-        if not self.spike_data_status:
+        if not self.data['spikes']['exists']:
             data_img = None
             return data_img
         else:
             T_BIN = 0.05
             D_BIN = 5
-            chn_min = np.min(np.r_[self.chn_min, self.spikes['depths'][self.spike_idx][self.kp_idx]])
-            chn_max = np.max(np.r_[self.chn_max, self.spikes['depths'][self.spike_idx][self.kp_idx]])
-            n, times, depths = bincount2D(self.spikes['times'][self.spike_idx][self.kp_idx],
-                                          self.spikes['depths'][self.spike_idx][self.kp_idx],
+            chn_min = np.min(np.r_[self.chn_min, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
+            chn_max = np.max(np.r_[self.chn_max, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
+            n, times, depths = bincount2D(self.data['spikes']['times'][self.spike_idx][self.kp_idx],
+                                          self.data['spikes']['depths'][self.spike_idx][self.kp_idx],
                                           T_BIN, D_BIN, ylim=[chn_min, chn_max])
             img = n.T / T_BIN
             xscale = (times[-1] - times[0]) / img.shape[0]
@@ -317,7 +240,7 @@ class PlotData:
                 'img': img,
                 'scale': np.array([xscale, yscale]),
                 'levels': np.quantile(np.mean(img, axis=0), [0, 1]),
-                'offset': np.array([0, 0]),
+                'offset': np.array([0, self.chn_min]),
                 'xrange': np.array([times[0], times[-1]]),
                 'xaxis': 'Time (s)',
                 'cmap': 'binary',
@@ -327,24 +250,24 @@ class PlotData:
             return data_img
 
     def get_fr_amp_data_line(self):
-        if not self.spike_data_status:
+        if not self.data['spikes']['exists']:
             data_fr_line = None
             data_amp_line = None
             return data_fr_line, data_amp_line
         else:
-            T_BIN = np.max(self.spikes['times'])
+            T_BIN = np.max(self.data['spikes']['times'])
             D_BIN = 10
-            chn_min = np.min(np.r_[self.chn_min, self.spikes['depths'][self.spike_idx][self.kp_idx]])
-            chn_max = np.max(np.r_[self.chn_max, self.spikes['depths'][self.spike_idx][self.kp_idx]])
-            nspikes, times, depths = bincount2D(self.spikes['times'][self.spike_idx][self.kp_idx],
-                                                self.spikes['depths'][self.spike_idx][self.kp_idx],
+            chn_min = np.min(np.r_[self.chn_min, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
+            chn_max = np.max(np.r_[self.chn_max, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
+            nspikes, times, depths = bincount2D(self.data['spikes']['times'][self.spike_idx][self.kp_idx],
+                                                self.data['spikes']['depths'][self.spike_idx][self.kp_idx],
                                                 T_BIN, D_BIN,
                                                 ylim=[chn_min, chn_max])
 
-            amp, times, depths = bincount2D(self.spikes['amps'][self.spike_idx][self.kp_idx],
-                                            self.spikes['depths'][self.spike_idx][self.kp_idx],
+            amp, times, depths = bincount2D(self.data['spikes']['amps'][self.spike_idx][self.kp_idx],
+                                            self.data['spikes']['depths'][self.spike_idx][self.kp_idx],
                                             T_BIN, D_BIN, ylim=[chn_min, chn_max],
-                                            weights=self.spikes['amps'][self.spike_idx]
+                                            weights=self.data['spikes']['amps'][self.spike_idx]
                                             [self.kp_idx])
             mean_fr = nspikes[:, 0] / T_BIN
             mean_amp = np.divide(amp[:, 0], nspikes[:, 0]) * 1e6
@@ -370,16 +293,16 @@ class PlotData:
             return data_fr_line, data_amp_line
 
     def get_correlation_data_img(self):
-        if not self.spike_data_status:
+        if not self.data['spikes']['exists']:
             data_img = None
             return data_img
         else:
             T_BIN = 0.05
             D_BIN = 40
-            chn_min = np.min(np.r_[self.chn_min, self.spikes['depths'][self.spike_idx][self.kp_idx]])
-            chn_max = np.max(np.r_[self.chn_max, self.spikes['depths'][self.spike_idx][self.kp_idx]])
-            R, times, depths = bincount2D(self.spikes['times'][self.spike_idx][self.kp_idx],
-                                          self.spikes['depths'][self.spike_idx][self.kp_idx],
+            chn_min = np.min(np.r_[self.chn_min, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
+            chn_max = np.max(np.r_[self.chn_max, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
+            R, times, depths = bincount2D(self.data['spikes']['times'][self.spike_idx][self.kp_idx],
+                                          self.data['spikes']['depths'][self.spike_idx][self.kp_idx],
                                           T_BIN, D_BIN, ylim=[chn_min, chn_max])
             corr = np.corrcoef(R)
             corr[np.isnan(corr)] = 0
@@ -388,7 +311,7 @@ class PlotData:
                 'img': corr,
                 'scale': np.array([scale, scale]),
                 'levels': np.array([np.min(corr), np.max(corr)]),
-                'offset': np.array([0, 0]),
+                'offset': np.array([self.chn_min, self.chn_min]),
                 'xrange': np.array([self.chn_min, self.chn_max]),
                 'cmap': 'viridis',
                 'title': 'Correlation',
@@ -399,41 +322,27 @@ class PlotData:
     def get_rms_data_img_probe(self, format):
         # Finds channels that are at equivalent depth on probe and averages rms values for each
         # time point at same depth togehter
-        try:
-            rms_amps = alf.io.load_file_content(Path(self.ephys_path, '_iblqc_ephysTimeRms' +
-                                                     format + '.rms.npy'))
-        except Exception:
-            try:
-                rms_amps = alf.io.load_file_content(Path(self.ephys_path, '_iblqc_ephysTimeRms' +
-                                                         format + '.amps.npy'))
-            except Exception:
-                print('rms data was not found, some plots will not display')
-                data_img = None
-                data_probe = None
-                return data_img, data_probe
 
-        try:
-            rms_times = alf.io.load_file_content(Path(self.ephys_path, '_iblqc_ephysTimeRms' +
-                                                      format + '.timestamps.npy'))
-            xaxis = 'Time (s)'
-        except Exception:
-            rms_times = np.array([0, rms_amps.shape[0]])
-            xaxis = 'Time samples'
+        if not self.data[f'rms_{format}']['exists']:
+            data_img = None
+            data_probe = None
+            return data_img, data_probe
 
-        _rms = np.take(rms_amps, self.chn_ind, axis=1)
+        _rms = np.take(self.data[f'rms_{format}']['rms'], self.chn_ind, axis=1)
         _, self.chn_depth, chn_count = np.unique(self.chn_coords[:, 1], return_index=True,
                                                  return_counts=True)
         self.chn_depth_eq = np.copy(self.chn_depth)
         self.chn_depth_eq[np.where(chn_count == 2)] += 1
 
         def avg_chn_depth(a):
-            return(np.mean([a[self.chn_depth], a[self.chn_depth_eq]], axis=0))
+            return (np.mean([a[self.chn_depth], a[self.chn_depth_eq]], axis=0))
 
         def get_median(a):
-            return(np.median(a))
+            return (np.median(a))
 
         def median_subtract(a):
-            return(a - np.median(a))
+            return (a - np.median(a))
+
         img = np.apply_along_axis(avg_chn_depth, 1, _rms * 1e6)
         median = np.mean(np.apply_along_axis(get_median, 1, img))
         # Medium subtract to remove bands, but add back average median so values make sense
@@ -443,7 +352,7 @@ class PlotData:
         img_full[:, self.idx_full] = img
 
         levels = np.quantile(img, [0.1, 0.9])
-        xscale = (rms_times[-1] - rms_times[0]) / img_full.shape[0]
+        xscale = (self.data[f'rms_{format}']['timestamps'][-1] - self.data[f'rms_{format}']['timestamps'][0]) / img_full.shape[0]
         yscale = (self.chn_max - self.chn_min) / img_full.shape[1]
 
         if format == 'AP':
@@ -455,15 +364,15 @@ class PlotData:
             'img': img_full,
             'scale': np.array([xscale, yscale]),
             'levels': levels,
-            'offset': np.array([0, 0]),
+            'offset': np.array([0, self.chn_min]),
             'cmap': cmap,
-            'xrange': np.array([rms_times[0], rms_times[-1]]),
-            'xaxis': xaxis,
+            'xrange': np.array([self.data[f'rms_{format}']['timestamps'][0], self.data[f'rms_{format}']['timestamps'][-1]]),
+            'xaxis': self.data[f'rms_{format}']['xaxis'],
             'title': format + ' RMS (uV)'
         }
 
         # Probe data
-        rms_avg = (np.mean(rms_amps, axis=0)[self.chn_ind]) * 1e6
+        rms_avg = (np.mean(self.data[f'rms_{format}']['rms'], axis=0)[self.chn_ind]) * 1e6
         probe_levels = np.quantile(rms_avg, [0.1, 0.9])
         probe_img, probe_scale, probe_offset = self.arrange_channels2banks(rms_avg)
 
@@ -490,10 +399,23 @@ class PlotData:
 
         for t in times:
 
-            sr, t = stream(pid, t, one=one)
-            raw = sr[:, :-sr.nsync].T
+            sr = Streamer(pid=pid, one=one, remove_cached=False, typ='ap')
+            th = sr.geometry
+
+            if sr.meta.get('NP2.4_shank', None) is not None:
+                h = neuropixel.trace_header(sr.major_version, nshank=4)
+                h = neuropixel.split_trace_header(h, shank=int(sr.meta.get('NP2.4_shank')))
+            else:
+                h = neuropixel.trace_header(sr.major_version, nshank=np.unique(th['shank']).size)
+                idx = np.isin(h['ind'], th['ind'])
+                for k in h.keys():
+                    h[k] = h[k][idx]
+
+            s0 = t * sr.fs
+            tsel = slice(int(s0), int(s0) + int(1 * sr.fs))
+            raw = sr[tsel, :-sr.nsync].T
             channel_labels, channel_features = voltage.detect_bad_channels(raw, sr.fs)
-            raw = voltage.destripe(raw, fs=sr.fs, channel_labels=channel_labels)
+            raw = voltage.destripe(raw, fs=sr.fs, h=h, channel_labels=channel_labels)
             raw_image = raw[:, int((450 / 1e3) * sr.fs):int((500 / 1e3) * sr.fs)].T
             x_range = np.array([0, raw_image.shape[0] - 1]) / sr.fs * 1e3
             levels = gain2level(-90)
@@ -504,7 +426,7 @@ class PlotData:
                 'img': raw_image,
                 'scale': np.array([xscale, yscale]),
                 'levels': levels,
-                'offset': np.array([0, 0]),
+                'offset': np.array([0, self.chn_min]),
                 'cmap': 'bone',
                 'xrange': x_range,
                 'xaxis': 'Time (ms)',
@@ -517,7 +439,8 @@ class PlotData:
     def get_lfp_spectrum_data(self):
         freq_bands = np.vstack(([0, 4], [4, 10], [10, 30], [30, 80], [80, 200]))
         data_probe = {}
-        if not self.lfp_data_status:
+
+        if not self.data['psd_lf']['exists']:
             data_img = None
             for freq in freq_bands:
                 lfp_band_data = {f"{freq[0]} - {freq[1]} Hz": None}
@@ -527,9 +450,9 @@ class PlotData:
         else:
             # Power spectrum image
             freq_range = [0, 300]
-            freq_idx = np.where((self.lfp_freq >= freq_range[0]) &
-                                (self.lfp_freq < freq_range[1]))[0]
-            _lfp = np.take(self.lfp_power[freq_idx], self.chn_ind, axis=1)
+            freq_idx = np.where((self.data['psd_lf']['freqs'] >= freq_range[0]) &
+                                (self.data['psd_lf']['freqs'] < freq_range[1]))[0]
+            _lfp = np.take(self.data['psd_lf']['power'][freq_idx], self.chn_ind, axis=1)
             _lfp_dB = 10 * np.log10(_lfp)
             _, self.chn_depth, chn_count = np.unique(self.chn_coords[:, 1], return_index=True,
                                                      return_counts=True)
@@ -537,7 +460,7 @@ class PlotData:
             self.chn_depth_eq[np.where(chn_count == 2)] += 1
 
             def avg_chn_depth(a):
-                return(np.mean([a[self.chn_depth], a[self.chn_depth_eq]], axis=0))
+                return (np.mean([a[self.chn_depth], a[self.chn_depth_eq]], axis=0))
 
             img = np.apply_along_axis(avg_chn_depth, 1, _lfp_dB)
             img_full = np.full((img.shape[0], self.chn_full.shape[0]), np.nan)
@@ -551,7 +474,7 @@ class PlotData:
                 'img': img_full,
                 'scale': np.array([xscale, yscale]),
                 'levels': levels,
-                'offset': np.array([0, 0]),
+                'offset': np.array([0, self.chn_min]),
                 'cmap': 'viridis',
                 'xrange': np.array([freq_range[0], freq_range[-1]]),
                 'xaxis': 'Frequency (Hz)',
@@ -560,8 +483,8 @@ class PlotData:
 
             # Power spectrum in bands on probe
             for freq in freq_bands:
-                freq_idx = np.where((self.lfp_freq >= freq[0]) & (self.lfp_freq < freq[1]))[0]
-                lfp_avg = np.mean(self.lfp_power[freq_idx], axis=0)[self.chn_ind]
+                freq_idx = np.where((self.data['psd_lf']['freqs'] >= freq[0]) & (self.data['psd_lf']['freqs'] < freq[1]))[0]
+                lfp_avg = np.mean(self.data['psd_lf']['power'][freq_idx], axis=0)[self.chn_ind]
                 lfp_avg_dB = 10 * np.log10(lfp_avg)
                 probe_img, probe_scale, probe_offset = self.arrange_channels2banks(lfp_avg_dB)
                 probe_levels = np.quantile(lfp_avg_dB, [0.1, 0.9])
@@ -582,28 +505,31 @@ class PlotData:
 
     def get_rfmap_data(self):
         data_img = dict()
-        if not self.rfmap_data_status:
+        if not self.data['rf_map']['exists']:
             return data_img, None
         else:
 
             (rf_map_times, rf_map_pos,
-             rf_stim_frames) = passive.get_on_off_times_and_positions(self.rf_map)
+             rf_stim_frames) = passive.get_on_off_times_and_positions(self.data['rf_map'])
+
+            chn_min = np.min(np.r_[self.chn_min, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
+            chn_max = np.max(np.r_[self.chn_max, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
 
             rf_map, _ = \
                 passive.get_rf_map_over_depth(rf_map_times, rf_map_pos, rf_stim_frames,
-                                              self.spikes['times'][self.spike_idx][self.kp_idx],
-                                              self.spikes['depths'][self.spike_idx][self.kp_idx],
-                                              d_bin=160)
+                                              self.data['spikes']['times'][self.spike_idx][self.kp_idx],
+                                              self.data['spikes']['depths'][self.spike_idx][self.kp_idx],
+                                              d_bin=160, y_lim=[chn_min, chn_max])
             rfs_svd = passive.get_svd_map(rf_map)
             img = dict()
             img['on'] = np.vstack(rfs_svd['on'])
             img['off'] = np.vstack(rfs_svd['off'])
-            yscale = ((np.max(self.chn_coords[:, 1]) - np.min(
-                self.chn_coords[:, 1])) / img['on'].shape[0])
+            yscale = ((self.chn_max - self.chn_min) / img['on'].shape[0])
+
             xscale = 1
             levels = np.quantile(np.c_[img['on'], img['off']], [0, 1])
 
-            depths = np.linspace(0, 3840, len(rfs_svd['on']) + 1)
+            depths = np.linspace(self.chn_min, self.chn_max, len(rfs_svd['on']) + 1)
 
             sub_type = ['on', 'off']
             for sub in sub_type:
@@ -611,7 +537,7 @@ class PlotData:
                     'img': [img[sub].T],
                     'scale': [np.array([xscale, yscale])],
                     'levels': levels,
-                    'offset': [np.array([0, 0])],
+                    'offset': [np.array([0, self.chn_min])],
                     'cmap': 'viridis',
                     'xrange': np.array([0, 15]),
                     'xaxis': 'Position',
@@ -624,32 +550,34 @@ class PlotData:
     def get_passive_events(self):
         stim_keys = ['valveOn', 'toneOn', 'noiseOn', 'leftGabor', 'rightGabor']
         data_img = dict()
-        if not self.passive_data_status and not self.gabor_data_status:
+        if not self.data['pass_stim']['exists'] and not self.data['gabor']['exists']:
             return data_img
-        elif not self.passive_data_status and self.gabor_data_status:
+        elif not self.data['pass_stim']['exists'] and self.data['gabor']['exists']:
             stim_types = ['leftGabor', 'rightGabor']
-            stims = self.vis_stim
-        elif self.passive_data_status and not self.gabor_data_status:
+            stims = self.data['gabor']
+        elif self.data['pass_stim']['exists'] and not self.data['gabor']['exists']:
             stim_types = ['valveOn', 'toneOn', 'noiseOn']
-            stims = {stim_type: self.aud_stim[stim_type] for stim_type in stim_types}
+            stims = {stim_type: self.data['pass_stim'][stim_type] for stim_type in stim_types}
         else:
             stim_types = stim_keys
-            stims = {stim_type: self.aud_stim[stim_type] for stim_type in stim_types[0:3]}
-            stims.update(self.vis_stim)
+            stims = {stim_type: self.data['pass_stim'][stim_type] for stim_type in stim_types[0:3]}
+            stims.update(self.data['gabor'])
+
+        chn_min = np.min(np.r_[self.chn_min, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
+        chn_max = np.max(np.r_[self.chn_max, self.data['spikes']['depths'][self.spike_idx][self.kp_idx]])
 
         base_stim = 1
         pre_stim = 0.4
         post_stim = 1
-        stim_events = passive.get_stim_aligned_activity(stims, self.spikes['times'][self.spike_idx]
-                                                        [self.kp_idx], self.spikes['depths']
+        stim_events = passive.get_stim_aligned_activity(stims, self.data['spikes']['times'][self.spike_idx]
+                                                        [self.kp_idx], self.data['spikes']['depths']
                                                         [self.spike_idx][self.kp_idx],
                                                         pre_stim=pre_stim, post_stim=post_stim,
-                                                        base_stim=base_stim)
+                                                        base_stim=base_stim, y_lim=[chn_min, chn_max])
 
         for stim_type, z_score in stim_events.items():
             xscale = (post_stim + pre_stim) / z_score.shape[1]
-            yscale = ((np.max(self.chn_coords[:, 1]) - np.min(
-                self.chn_coords[:, 1])) / z_score.shape[0])
+            yscale = ((self.chn_max - self.chn_min) / z_score.shape[0])
 
             levels = [-10, 10]
 
@@ -657,7 +585,7 @@ class PlotData:
                 'img': z_score.T,
                 'scale': np.array([xscale, yscale]),
                 'levels': levels,
-                'offset': np.array([-1 * pre_stim, 0]),
+                'offset': np.array([-1 * pre_stim, self.chn_min]),
                 'cmap': 'bwr',
                 'xrange': [-1 * pre_stim, post_stim],
                 'xaxis': 'Time from Stim Onset (s)',
@@ -668,14 +596,19 @@ class PlotData:
         return data_img
 
     def get_autocorr(self, clust_idx):
-        idx = np.where(self.spikes['clusters'] == self.clust_id[clust_idx])[0]
-        autocorr = xcorr(self.spikes['times'][idx], self.spikes['clusters'][idx],
+        idx = np.where(self.data['spikes']['clusters'] == self.clust_id[clust_idx])[0]
+        autocorr = xcorr(self.data['spikes']['times'][idx], self.data['spikes']['clusters'][idx],
                          AUTOCORR_BIN_SIZE, AUTOCORR_WIN_SIZE)
 
-        return autocorr[0, 0, :], self.clust_id[clust_idx]
+        if self.data['clusters'].get('metrics', {}).get('cluster_id', None) is None:
+            clust_id = self.clust_id[clust_idx]
+        else:
+            clust_id = self.data['clusters'].metrics.cluster_id[self.clust_id[clust_idx]]
+
+        return autocorr[0, 0, :], clust_id
 
     def get_template_wf(self, clust_idx):
-        template_wf = (self.clusters['waveforms'][self.clust_id[clust_idx], :, 0])
+        template_wf = (self.data['clusters']['waveforms'][self.clust_id[clust_idx], :, 0])
         return template_wf * 1e6
 
     def arrange_channels2banks(self, data):
@@ -686,7 +619,7 @@ class PlotData:
             bnk_idx = np.where(self.chn_coords[:, 0] == x)[0]
 
             bnk_ycoords = self.chn_coords[bnk_idx, 1]
-            bnk_diff = np.min(np.diff(bnk_ycoords))
+            bnk_diff = np.min(np.abs(np.diff(bnk_ycoords)))
 
             # NP1.0 checkerboard
             if bnk_diff != self.chn_diff:
@@ -715,7 +648,7 @@ class PlotData:
                 _bnk_yscale = ((self.chn_max -
                                 self.chn_min) / _bnk_data.shape[1])
                 _bnk_xscale = BNK_SIZE / _bnk_data.shape[0]
-                _bnk_yoffset = 0
+                _bnk_yoffset = self.chn_min
                 _bnk_xoffset = BNK_SIZE * iX
 
             bnk_data.append(_bnk_data)
@@ -739,7 +672,7 @@ class PlotData:
         self.t_autocorr = 1e3 * np.arange((AUTOCORR_WIN_SIZE / 2) - AUTOCORR_WIN_SIZE,
                                           (AUTOCORR_WIN_SIZE / 2) + AUTOCORR_BIN_SIZE,
                                           AUTOCORR_BIN_SIZE)
-        n_template = self.clusters['waveforms'][0, :, 0].size
+        n_template = self.data['clusters']['waveforms'][0, :, 0].size
         self.t_template = 1e3 * (np.arange(n_template)) / FS
 
     def normalise_data(self, data, lquant=0, uquant=1):

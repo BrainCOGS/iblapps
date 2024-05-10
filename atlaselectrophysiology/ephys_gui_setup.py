@@ -4,7 +4,8 @@ import pyqtgraph.exporters
 import numpy as np
 from random import randrange
 from atlaselectrophysiology.AdaptedAxisItem import replace_axis
-from ibllib.qc.critical_reasons import REASONS_INS_CRIT_GUI
+from ibllib.qc.critical_reasons import CriticalInsertionNote
+
 
 pg.setConfigOption('background', 'w')
 pg.setConfigOption('foreground', 'k')
@@ -190,6 +191,11 @@ class Setup():
         slice_ccf.triggered.connect(lambda: self.plot_slice(self.slice_data, 'ccf'))
         slice_label = QtWidgets.QAction('Annotation', self, checkable=True, checked=False)
         slice_label.triggered.connect(lambda: self.plot_slice(self.slice_data, 'label'))
+
+        if self.fp_slice_data is not None:
+            fp_slice_label = QtWidgets.QAction('Annotation FP', self, checkable=True, checked=False)
+            fp_slice_label.triggered.connect(lambda: self.plot_slice(self.fp_slice_data, 'label'))
+
         if not self.offline:
             slice_hist_cb = QtWidgets.QAction('Histology cerebellar example', self, checkable=True, checked=False)
             slice_hist_cb.triggered.connect(lambda: self.plot_slice(self.slice_data, 'hist_cb'))
@@ -210,6 +216,10 @@ class Setup():
         self.slice_options_group.addAction(slice_ccf)
         slice_options.addAction(slice_label)
         self.slice_options_group.addAction(slice_label)
+        if self.fp_slice_data is not None:
+            slice_options.addAction(fp_slice_label)
+            self.slice_options_group.addAction(fp_slice_label)
+
         if not self.offline:
             slice_options.addAction(slice_hist_cb)
             self.slice_options_group.addAction(slice_hist_cb)
@@ -344,6 +354,11 @@ class Setup():
         toggle_histology_option.setShortcut('Shift+N')
         toggle_histology_option.triggered.connect(self.toggle_histology_button_pressed)
 
+        # Option to change histology regions from Allen to Franklin Paxinos
+        toggle_histology_map_option = QtWidgets.QAction('Change Histology Map', self)
+        toggle_histology_map_option.setShortcut('Shift+M')
+        toggle_histology_map_option.triggered.connect(self.toggle_histology_map_button_pressed)
+
         # Shortcuts for cluster popup window
         popup_minimise = QtWidgets.QAction('Minimise/Show Cluster Popup', self)
         popup_minimise.setShortcut('Alt+M')
@@ -370,6 +385,7 @@ class Setup():
         display_options.addAction(toggle_lines_option)
         display_options.addAction(toggle_channels_option)
         display_options.addAction(toggle_histology_option)
+        display_options.addAction(toggle_histology_map_option)
         display_options.addAction(popup_minimise)
         display_options.addAction(popup_close)
         display_options.addAction(save_plots)
@@ -394,6 +410,27 @@ class Setup():
             nearby_info = QtWidgets.QAction('Nearby Sessions', self)
             nearby_info.triggered.connect(self.display_nearby_sessions)
             info_options.addAction(nearby_info)
+
+            scaling_info = QtWidgets.QAction('Subject Scaling', self)
+            scaling_info.triggered.connect(self.display_subject_scaling)
+            info_options.addAction(scaling_info)
+
+            feature_info = QtWidgets.QAction('Region Feature', self)
+            feature_info.triggered.connect(self.display_region_features)
+            info_options.addAction(feature_info)
+
+        # MAPPING MENU BAR
+        # allen_mapping = QtWidgets.QAction('Allen', self, checkable=True, checked=True)
+        # beryl_mapping = QtWidgets.QAction('Beryl', self, checkable=True, checked=False)
+        # cosmos_mapping = QtWidgets.QAction('Cosmos', self, checkable=True, checked=False)
+        #
+        # mapping_options = menu_bar.addMenu('Atlas Mappings')
+        # mapping_options.addAction(allen_mapping)
+        # mapping_options.addAction(beryl_mapping)
+        # mapping_options.addAction(cosmos_mapping)
+        #
+        # # Initialise with Allen mapping
+        # self.mapping_init = allen_mapping
 
     def init_interaction_features(self):
         """
@@ -513,7 +550,7 @@ class Setup():
             self.desc_layout = QtWidgets.QVBoxLayout()
             self.desc_layout.setSpacing(5)
             self.desc_buttons.setExclusive(False)
-            options = REASONS_INS_CRIT_GUI
+            options = CriticalInsertionNote.descriptions_gui
             for i, val in enumerate(options):
 
                 button = QtWidgets.QCheckBox(val)
