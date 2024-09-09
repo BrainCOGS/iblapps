@@ -20,7 +20,7 @@ from atlaselectrophysiology.subject_scaling import ScalingWindow
 from ephysfeatures.features_across_region import RegionFeatureWindow
 from atlaselectrophysiology.create_overview_plots import make_overview_plot
 from pathlib import Path
-import PyQt5 as qt
+from qt_helpers import qt
 import matplotlib.pyplot as mpl  # noqa  # This is needed to make qt show properly :/
 
 
@@ -2161,8 +2161,16 @@ def launch_gui(data_directory):
 
     # mainapp = MainWindow(offline=True)
     mainapp.show()
-    
+
     app.exec_()
+
+
+def launch_offline():
+
+    app_off = QtWidgets.QApplication([])
+    mainapp_off = MainWindow(offline=True)
+    mainapp_off.show()
+    app_off.exec_()
 
 
 if __name__ == '__main__':
@@ -2190,5 +2198,5 @@ if __name__ == '__main__':
 
     # mainapp = MainWindow(offline=True)
     mainapp.show()
-    
+
     app.exec_()
