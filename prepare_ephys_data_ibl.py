@@ -1,6 +1,5 @@
 from pathlib import Path
-from ibllib.io import spikeglx
-from atlaselectrophysiology.extract_files import extract_data, extract_rmsmap, _sample2v 
+from atlaselectrophysiology.extract_files import extract_data, extract_rmsmap, _sample2v
 import ibllib.ephys.ephysqc as ephysqc
 from phylib.io import alf
 import numpy as np
