@@ -12,7 +12,9 @@ class ColorBar(pg.GraphicsWidget):
 
         # Create colour map from matplotlib colourmap name
         self.cmap_name = cmap_name
-        cmap = matplotlib.cm.get_cmap(self.cmap_name)
+        # matplotlib.cm.get_cmap was deprecated in 3.7 and removed in 3.9;
+        # matplotlib.colormaps is the replacement and exists from 3.5 on.
+        cmap = matplotlib.colormaps[self.cmap_name]
         if type(cmap) == matplotlib.colors.LinearSegmentedColormap:
             cbins = np.linspace(0.0, 1.0, cbin)
             colors = (cmap(cbins)[np.newaxis, :, :3][0]).tolist()
