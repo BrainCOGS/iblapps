@@ -1,4 +1,4 @@
-from matplotlib import cm
+import matplotlib
 import numpy as np
 from iblutil.numerical import bincount2D
 from brainbox.io.spikeglx import Streamer
@@ -108,7 +108,10 @@ class PlotData:
             amp_range = np.quantile(self.data['spikes']['amps'][self.spike_idx][self.kp_idx], [0, 0.9])
             amp_bins = np.linspace(amp_range[0], amp_range[1], A_BIN)
             colour_bin = np.linspace(0.0, 1.0, A_BIN + 1)
-            colours = ((cm.get_cmap('BuPu')(colour_bin)[np.newaxis, :, :3][0]) * 255).astype(np.int32)
+            # cm.get_cmap was removed in matplotlib 3.9; colormaps is the
+            # supported spelling and returns the same LUT.
+            colours = ((matplotlib.colormaps['BuPu'](colour_bin)[np.newaxis, :, :3][0])
+                       * 255).astype(np.int32)
             spikes_colours = np.empty(self.data['spikes']['amps'][self.spike_idx][self.kp_idx].size,
                                       dtype=object)
             spikes_size = np.empty(self.data['spikes']['amps'][self.spike_idx][self.kp_idx].size)
