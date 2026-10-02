@@ -1,0 +1,78 @@
+# Dependabot configuration (same policy as BrainCOGS/U19-pipeline-python).
+#
+# This fork tracks int-brain-lab/iblapps. The `uv` entry relies on the
+# pyproject.toml/uv.lock added in the prek/workflows PR, which also sets
+# `exclude-newer = "7 days"` in [tool.uv].
+#
+# No `pip` entry for requirements.txt: setup.py reads it, but uv.lock is the
+# resolved source for CI; a pip entry alongside `uv` would duplicate PRs.
+
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    cooldown:
+      default-days: 7
+
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+
+    open-pull-requests-limit: 5
+
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+    commit-message:
+      prefix: "ci"
+
+    rebase-strategy: "auto"
+
+    # Version and security updates are grouped independently, so both need a
+    # group (a group without `applies-to` only batches version updates).
+    groups:
+      actions:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+      actions-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
+
+  - package-ecosystem: "uv"
+    directory: "/"
+    cooldown:
+      default-days: 7
+
+    schedule:
+      interval: "monthly"
+      day: "wednesday"
+      time: "06:00"
+      timezone: "UTC"
+
+    open-pull-requests-limit: 5
+
+    labels:
+      - "dependencies"
+
+    commit-message:
+      prefix: "deps"
+
+    rebase-strategy: "auto"
+
+    # Version and security updates are grouped independently, so both need a
+    # group (a group without `applies-to` only batches version updates).
+    groups:
+      python:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+      python-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
