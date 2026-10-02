@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+# Version, dependencies (requirements.txt), packages and entry points are
+# still defined in setup.py, which is kept as-is to stay close to upstream.
+[project]
+name = "iblapps"
+requires-python = ">=3.10"
+dynamic = ["version", "dependencies", "scripts"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+# Quarantine: ignore releases newer than 7 days (supply-chain protection).
+exclude-newer = "7 days"
+
+[tool.ruff]
+# Mirrors upstream's .flake8 (max-line-length = 99; W504 has no ruff equivalent).
+line-length = 99
+extend-exclude = [
+    "__init__.py",
+    "data_exploration_gui",
+    "launch_phy",
+    "histology",
+    "qt_matplotlib.py",
+    "*.ipynb",
+]
+
+[tool.ruff.lint]
+# Upstream's flake8 setup is not enforced (hundreds of existing E501/W29x/E7xx
+# findings), and rewriting that code would make merging upstream/master painful.
+# Only real-error checks are enabled; the ignores below are pre-existing noise
+# in upstream code and can be removed if the fork ever diverges.
+select = ["E9", "F"]
+ignore = [
+    "F401",  # unused imports (many are re-exports / GUI side effects)
+    "F541",  # f-string without placeholders
+    "F811",  # redefinition of unused name
+    "F841",  # unused local variables
+]
+
+[tool.ruff.format]
+quote-style = "preserve"  # upstream mixes quote styles
