@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dynamic = ["version", "dependencies", "scripts"]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=9.1.1"]
 
 [tool.uv]
 # Quarantine: ignore releases newer than 7 days (supply-chain protection).
@@ -29,17 +29,185 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-# Upstream's flake8 setup is not enforced (hundreds of existing E501/W29x/E7xx
-# findings), and rewriting that code would make merging upstream/master painful.
-# Only real-error checks are enabled; the ignores below are pre-existing noise
-# in upstream code and can be removed if the fork ever diverges.
-select = ["E9", "F"]
-ignore = [
-    "F401",  # unused imports (many are re-exports / GUI side effects)
-    "F541",  # f-string without placeholders
-    "F811",  # redefinition of unused name
-    "F841",  # unused local variables
+# Full rule set (same as tech_calendar_streamlit). `extend-select` keeps ruff's
+# defaults (E4, E7, E9, F).
+extend-select = [
+    "A",    # flake8-builtins: shadowing built-ins
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "T100", # leftover breakpoints / debugger calls
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "UP",   # pyupgrade
+    "C4",   # flake8-comprehensions
+]
+ignore = ["N815", "A002", "N806"]  # reference ignores: mixedCase class attrs, arg shadows builtin, non-lowercase local var
+
+[tool.ruff.lint.per-file-ignores]
+# This fork tracks int-brain-lab/iblapps, so the full rule set is applied only to
+# files added by BrainCOGS (tests/conftest.py, tests/test_import.py). Upstream
+# files keep a minimal set (E9 + F minus the noisy F401/F541/F811/F841): rewriting
+# them to satisfy the new rules would make merging upstream/master painful. The
+# list below ignores every other rule family that ruff 0.16 enables by default or
+# that we extend-select. Remove an entry only if the fork diverges from upstream.
+"{atlaselectrophysiology,atlasview,dlc,ephysfeatures,mesoscope_gui,needles2,qt_helpers,viewspikes}/**" = [
+    "A",
+    "ASYNC",
+    "B",
+    "BLE",
+    "C",
+    "D",
+    "DTZ",
+    "E1",
+    "E2",
+    "E3",
+    "E4",
+    "E5",
+    "E7",
+    "EXE",
+    "F401",
+    "F541",
+    "F811",
+    "F841",
+    "FA",
+    "FLY",
+    "FURB",
+    "G",
+    "I",
+    "INT",
+    "ISC",
+    "LOG",
+    "N",
+    "PERF",
+    "PGH",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLR",
+    "PLW",
+    "PT",
+    "PTH",
+    "PYI",
+    "RET",
+    "RUF",
+    "S",
+    "SIM",
+    "T",
+    "TC",
+    "TRY",
+    "UP",
+    "W",
+    "YTT",
+]
+"{prepare_ephys_data_ibl,setup}.py" = [
+    "A",
+    "ASYNC",
+    "B",
+    "BLE",
+    "C",
+    "D",
+    "DTZ",
+    "E1",
+    "E2",
+    "E3",
+    "E4",
+    "E5",
+    "E7",
+    "EXE",
+    "F401",
+    "F541",
+    "F811",
+    "F841",
+    "FA",
+    "FLY",
+    "FURB",
+    "G",
+    "I",
+    "INT",
+    "ISC",
+    "LOG",
+    "N",
+    "PERF",
+    "PGH",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLR",
+    "PLW",
+    "PT",
+    "PTH",
+    "PYI",
+    "RET",
+    "RUF",
+    "S",
+    "SIM",
+    "T",
+    "TC",
+    "TRY",
+    "UP",
+    "W",
+    "YTT",
+]
+"tests/test_{alignment_qc_gui,task_qc_viewer}.py" = [
+    "A",
+    "ASYNC",
+    "B",
+    "BLE",
+    "C",
+    "D",
+    "DTZ",
+    "E1",
+    "E2",
+    "E3",
+    "E4",
+    "E5",
+    "E7",
+    "EXE",
+    "F401",
+    "F541",
+    "F811",
+    "F841",
+    "FA",
+    "FLY",
+    "FURB",
+    "G",
+    "I",
+    "INT",
+    "ISC",
+    "LOG",
+    "N",
+    "PERF",
+    "PGH",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLR",
+    "PLW",
+    "PT",
+    "PTH",
+    "PYI",
+    "RET",
+    "RUF",
+    "S",
+    "SIM",
+    "T",
+    "TC",
+    "TRY",
+    "UP",
+    "W",
+    "YTT",
 ]
 
 [tool.ruff.format]
 quote-style = "preserve"  # upstream mixes quote styles
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+# pytest 9 requires "args"-type options to be a real TOML list.
+addopts = ["-ra", "--showlocals", "--strict-config", "--strict-markers", "--import-mode=importlib"]
+xfail_strict = true
+log_level = "INFO"
+testpaths = ["tests"]
+filterwarnings = ["error"]
