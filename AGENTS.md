@@ -1,13 +1,13 @@
 # iblapps (BrainCOGS fork)
 
 BrainCOGS's fork of int-brain-lab/iblapps (PyQt5 apps for IBL sessions, mainly
-the ephys alignment GUI), launched from RecordingProcessJobGUI. Python >= 3.10.
+the ephys alignment GUI), launched from RecordingProcessJobGUI. Python >= 3.11.
 
 ## Setup and tests
 
 ```bash
 uv sync --locked
-uv run pytest -q            # CI: Python 3.10 and 3.13 (needs libegl1/libgl1 on Linux)
+uv run pytest -q            # CI: Python 3.11 and 3.13 (needs libegl1/libgl1 on Linux)
 ```
 
 Lint: `uvx prek run --all-files` (the same as CI's Lint workflow).
