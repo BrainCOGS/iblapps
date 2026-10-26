@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # still defined in setup.py, which is kept as-is to stay close to upstream.
 [project]
 name = "iblapps"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dynamic = ["version", "dependencies", "scripts"]
 
 [dependency-groups]
@@ -15,6 +15,11 @@ dev = ["pytest>=9.1.1"]
 [tool.uv]
 # Quarantine: ignore releases newer than 7 days (supply-chain protection).
 exclude-newer = "7 days"
+# certifi 2026.10.19 (uploaded 2026-10-20) drops the emSign roots whose
+# intermediate keys were compromised (PYSEC-2026-4320), which fails `uv audit`.
+# Taken before the week is up; drop the entry once that release is older than
+# the window.
+exclude-newer-package = { certifi = "2026-10-21T00:00:00Z" }
 
 [tool.ruff]
 # Mirrors upstream's .flake8 (max-line-length = 99; W504 has no ruff equivalent).
