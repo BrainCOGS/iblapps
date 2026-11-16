@@ -20,14 +20,15 @@ def prepare_data(ephys_path, ks_path, output_path):
     # STEP 1: Load KS data and convert to ALF files
     ap_bin_path = list(ephys_path.glob('*.ap.bin'))[0]
     #ap_bin_path = list(ephys_path.glob('tmp_wh.dat'))[0]
-    lf_bin_path = list(ephys_path.glob('*.lf.bin'))[0]
+    # LF not used: SpikeGLX may not save it, and NP2.0 probes never record it
+    #lf_bin_path = list(ephys_path.glob('*.lf.bin'))[0]
     m = ephysqc.phy_model_from_ks2_path(ks_path, ephys_path, ap_bin_path)
     ac = alf.EphysAlfCreator(m)
     ac.convert(out_path, force=True, ampfactor=_sample2v(ap_bin_path))
 
     # STEP 2: SAVE AP & LF RMSMAP
     extract_rmsmap(ap_bin_path, out_folder=out_path, spectra=False)
-    extract_rmsmap(lf_bin_path, out_folder=out_path)
+    #extract_rmsmap(lf_bin_path, out_folder=out_path)
 
     # STEP 3: Cluster metrics, using the spike depths computed already
     spike_depths = np.load(out_path / 'spikes.depths.npy');
